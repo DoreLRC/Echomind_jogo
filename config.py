@@ -6,7 +6,7 @@ ALTURA_TELA = 720
 TITULO = "ECHOMIND - Sprint 1"
 
 # Métricas de Gameplay do GDD
-VELOCIDADE_ECHO = 280    
+VELOCIDADE_ECHO = 280
 FORCA_PULO = -600    
 GRAVIDADE = 1500         
 

@@ -3,15 +3,17 @@ from pplay.window import Window
 from pplay.gameimage import GameImage
 from pplay.sprite import Sprite
 import config
-from entidades import Echo, Eco, Portal, Plataforma, Sentinela, Laser, Coletavel
+from entidades import Echo, Eco, Portal, Plataforma, Sentinela, Laser, Coletavel, Botao
 import pygame
 import json
 import datetime
 
-# Estado extra (não existe no config.py): digitação do nome
-ESTADO_NOME = 5
+# Estados extras (não existem no config.py)
+ESTADO_NOME = 5       # digitação do nome no fim do jogo
+ESTADO_CUTSCENE = 6   # cutscene entre a fase 4 e a fase 5
 
 ARQUIVO_RANKING = "ranking.json"
+FASE_FINAL = 6
 
 
 # ==========================================================
@@ -26,8 +28,6 @@ def formatar_tempo(segundos):
 
 
 def carregar_ranking():
-    """Lê o ranking do disco, sempre ordenado do menor tempo
-    para o maior."""
     try:
         with open(ARQUIVO_RANKING, "r", encoding="utf-8") as f:
             dados = json.load(f)
@@ -37,8 +37,6 @@ def carregar_ranking():
 
 
 def salvar_no_ranking(nome, tempo):
-    """Acrescenta uma entrada {nome, tempo, data} e regrava o
-    arquivo ordenado. Retorna o ranking atualizado."""
     ranking = carregar_ranking()
     ranking.append({
         "nome": nome,
@@ -55,11 +53,39 @@ def salvar_no_ranking(nome, tempo):
 
 
 # ==========================================================
-# FÁBRICA DE FASES (PUZZLES)
+# LINHA DO CHÃO DE CADA FASE
+# Cada fundo tem a rua/piso numa altura diferente. Se o
+# boneco flutuar ou afundar numa fase, ajuste SÓ o número
+# dela (px a partir do topo; maior = mais para baixo).
+# ==========================================================
+CHAO_FASE = {
+    1: 680,   # fase1.jpg
+    2: 700,   # fase2.jpg  (calçada do novo fundo)
+    3: 680,   # fase3.jpg
+    4: 690,   # fase4.png  (corredor de servidores)
+    5: 700,   # fase5.png  (mundo branco)
+    6: 650,   # fase6.png  (sala-janela: o piso é mais alto)
+}
+
+FUNDO_FASE_ARQ = {
+    1: "assets/fase1.jpg", 2: "assets/fase2.jpg", 3: "assets/fase3.jpg",
+    4: "assets/fase4.jpg", 5: "assets/fase5.jpg", 6: "assets/fase6.jpg",
+}
+
+PORTAL_FASE_IMG = {
+    1: "portal.png", 2: "portal.png", 3: "portal.png",
+    4: "portalfase4.png",          # portal VERMELHO especial → cutscene
+    5: "portal_branca_.png",       # mundo branco: portal roxo
+    6: "portal_branca_.png",
+}
+
+
+# ==========================================================
+# HELPERS DE MONTAGEM
 # ==========================================================
 def pedestal_para(sentinela):
-    """Cria uma plataforma de apoio exatamente sob uma sentinela
-    flutuante: a laje visível encosta na base visível da torre."""
+    """Plataforma de apoio sob uma sentinela flutuante: a laje
+    visível encosta na base visível da torre."""
     p = Plataforma(0, 0)
     rv = p.rect_visual
     base_torre = sentinela.y + sentinela.rect_visual.bottom
@@ -68,198 +94,298 @@ def pedestal_para(sentinela):
     return p
 
 
-def criar_fase(numero):
-    """
-    Cria e retorna todas as entidades de uma fase.
-    Todo o level design fica centralizado aqui.
+def portal_sobre(plataforma, imagem):
+    """Cria o portal com a base exatamente no topo visível da
+    laje, centralizado nela (alinha em qualquer fundo/escala)."""
+    p = Portal(0, 0, imagem)
+    laje = plataforma.rect_visual
+    topo_laje = plataforma.y + laje.top
+    centro_laje = plataforma.x + laje.centerx
+    p.set_position(centro_laje - p.rect_visual.centerx,
+                   topo_laje - p.rect_visual.bottom)
+    return p
 
-    NOTAS DE FÍSICA (usadas para calibrar os vãos):
-    - O pouso acontece no TOPO VISÍVEL da laje (plat.y + 46);
-      de pé numa plataforma, echo.y = plat.y - 59.
-    - Altura máx. do pulo: 120px. Do chão só se alcançam lajes
-      com plat.y >= ~520; de uma plataforma, ~130px acima.
-    - Subir na cabeça de um clone dá ~100px extras. VÃOS
-      MAIORES QUE O PULO SÓ SE VENCEM EMPILHANDO CLONES.
-    - Torre visível da sentinela: x+73..x+170 (flip ESQUERDA).
-      Para aparecer inteira: -73 <= x <= 1105.
-    - As rasantes têm ALCANCE limitado: o começo do mapa é uma
-      zona segura para gravar clones com calma.
-    - REGRA DO PORTAL: só funciona com os 3 cubos da fase.
-    """
-    fase = {"portal": None, "plataformas": [], "sentinelas": [], "coletaveis": []}
+
+def botao_no_chao(x, chao):
+    b = Botao(x, 0)
+    b.apoiar_em(chao)
+    return b
+
+
+def botao_na_laje(x, plataforma):
+    b = Botao(x, 0)
+    b.apoiar_em(plataforma.y + plataforma.rect_visual.top)
+    return b
+
+
+# ==========================================================
+# FÁBRICA DE FASES (PUZZLES)
+# ----------------------------------------------------------
+# FÍSICA usada na calibragem (não mude sem recalcular):
+# - Pé visual do corpo: y+105. Em pé numa laje: y = plat.y-59.
+# - Pulo sobe 120px e viaja ~224px na horizontal.
+# - Cabeça de clone: pisar nela dá ~100px extras de altura.
+# - Corpo em pé em Y ocupa (Y+5 .. Y+105).
+# - Torre visível: ESQ x+73..x+170 | DIR x+80..x+177;
+#   cano em y_torre+85. Tela: -73 <= x <= 1105 p/ aparecer.
+# REGRAS DO PORTAL: 3 cubos coletados E todos os botões da
+# fase pressionados EM TEMPO REAL (clone segurando conta).
+# ==========================================================
+def criar_fase(numero):
+    fase = {"portal": None, "plataformas": [], "sentinelas": [],
+            "coletaveis": [], "botoes": [],
+            "chao": CHAO_FASE.get(numero, config.ALTURA_TELA - config.CHAO_Y_OFFSET)}
+    chao = fase["chao"]
+    img_portal = PORTAL_FASE_IMG.get(numero, "portal.png")
 
     if numero == 1:
-       
-        fase["portal"] = Portal(1145, 193)   # sobre o degrau C
+        # ==================================================
+        # FASE 1 — "O SACRIFÍCIO"
+        # Corredor rasante (escudo ANDANDO) + escada com vão
+        # impossível (clone-degrau) + BOTÃO no chão atrás do
+        # perigo: o portal só abre com um clone-estátua
+        # parado sobre ele (grave-se PARADO em cima: fita de
+        # 1 posição = estátua permanente).
+        # Cubos: Mirante (esq., estátua no spawn + salto na
+        # linha da S3), Boca do Canhão da S2 (dir.), arco B→C.
+        # Clones mínimos no Difícil: escudo, botão, degrau A,
+        # mirante = 4 (exato).
+        # ==================================================
+        A = Plataforma(800, 575)
+        B = Plataforma(950, 380)
+        C = Plataforma(1090, 280)
+        fase["plataformas"] = [A, B, C]
+        fase["portal"] = portal_sobre(C, img_portal)
 
-        fase["plataformas"] = [
-            Plataforma(800, 575),    # degrau A (alcançável do chão)
-            Plataforma(950, 380),    # degrau B (SÓ com clone-escada em A)
-            Plataforma(1090, 280),   # degrau C — plataforma do portal
-        ]
-
-        # S1 — rasante do corredor. Alcance 460: os lasers morrem
-        # em x~225, deixando o spawn/zona de gravação em paz.
-        s1 = Sentinela(620, 0, "ESQUERDA", cooldown=0.95, vel_laser=480,
-                       timer_inicial=0.0, alcance=460)
-        s1.apoiar_no_chao()
-
-        # S2 — anti-pulo / anti-escada (visível: x 1178..1275)
+        s1 = Sentinela(620, 0, "ESQUERDA", cooldown=0.85, vel_laser=480,
+                       timer_inicial=0.0, alcance=460)      # rasante; spawn seguro
+        s1.apoiar_no_chao(chao)
         s2 = Sentinela(1105, 0, "ESQUERDA", cooldown=2.2, vel_laser=420, timer_inicial=1.1)
-        s2.posicionar_cano_em(505)
-
-        # S3 — guarda o degrau B e os saltos dos cubos 1 e 3
+        s2.posicionar_cano_em(505)                            # anti-pulo / anti-escada
         s3 = Sentinela(-70, 0, "DIREITA", cooldown=2.4, vel_laser=400, timer_inicial=0.0)
-        s3.posicionar_cano_em(410)
-
+        s3.posicionar_cano_em(410)                            # degrau B + cubos
         fase["sentinelas"] = [s1, s2, s3]
-
-        # Pedestais sob as torres flutuantes (S1 já está no chão)
         fase["plataformas"] += [pedestal_para(s2), pedestal_para(s3)]
 
+        fase["botoes"] = [botao_no_chao(880, chao)]
+
         fase["coletaveis"] = [
-            Coletavel(80, 340),      # 1: MIRANTE (esquerda do mapa)
-            Coletavel(1090, 450),    # 2: BOCA DO CANHÃO da S2 (direita)
-            Coletavel(1040, 250),    # 3: arco do salto B→C (topo)
+            Coletavel(80, 340),      # MIRANTE (esquerda)
+            Coletavel(1090, 450),    # BOCA DO CANHÃO (direita)
+            Coletavel(1040, 250),    # TRAVESSIA B→C (topo)
         ]
 
     elif numero == 2:
         # ==================================================
-        # FASE 2 — "ESCALADA SINCRONIZADA"
-        #
-        # A TORRE: P2 (545) alcançável do chão; P3 (345) e
-        # P4 (150) ficam a DOIS vãos impossíveis — empilhar é
-        # obrigatório: clone em P2 → cabeça → P3; clone em
-        # P3 → cabeça → P4 → portal.
-        #
-        # CORREDORES CRUZADOS: SA rasante (alcance limitado —
-        # o spawn é seguro) fecha o chão da direita; SB (y~470)
-        # varre a cabeça do clone de P2; SC (y~250) varre a
-        # cabeça do clone de P3; SD (y~350) varre quem está de
-        # pé em P3 — mas o clone empilhado ali ABSORVE esses
-        # tiros: seu degrau vira seu escudo.
-        #
-        # OS 3 CUBOS — espalhados pelos 3 cantos do mapa:
-        #  1. BOCA DO CANHÃO DA SD (esquerda): flutua colado no
-        #     cano. Puzzle próprio: clone parado na zona segura
-        #     do spawn, subir na cabeça e saltar até o cubo à
-        #     queima-roupa da SD — com o corredor da SB
-        #     cruzando a altura da cabeça do clone.
-        #  2. ZONA DE FOGO DA SA (direita, chão): cd 1.0s —
-        #     entrar e sair exige clone-escudo na frente.
-        #  3. ARCO FINAL (topo): na linha da SC, pego DURANTE
-        #     o salto P3→P4 — a jogada mais difícil da fase.
+        # FASE 2 — "ESCALADA SINCRONIZADA"  (chão novo: 700)
+        # Torre P2→P3→P4 (dois empilhamentos) + rasante SA.
+        # NOVO: plataforma do BOTÃO (BJ) varrida pela SB —
+        # gravar parado ali é morte: a fita PRECISA conter
+        # PULOS sobre os tiros → o clone-botão fica pulando,
+        # o portal solta a cada pulo e a entrada é sincronizada.
+        # Cubo 1 pego saltando da própria BJ (sem clone extra).
+        # Clones no Difícil: botão, escudo, P2, P3 = 4 (exato).
         # ==================================================
-        fase["portal"] = Portal(1135, 63)    # sobre P4, lá no topo
+        P2 = Plataforma(620, 545)
+        P3 = Plataforma(820, 345)
+        P4 = Plataforma(1080, 150)
+        BJ = Plataforma(330, 540)    # plataforma do botão
+        fase["plataformas"] = [P2, P3, P4, BJ]
+        fase["portal"] = portal_sobre(P4, img_portal)
 
-        fase["plataformas"] = [
-            Plataforma(620, 545),    # P2 (alcançável do chão)
-            Plataforma(820, 345),    # P3 (SÓ com clone-escada em P2)
-            Plataforma(1080, 150),   # P4 — plataforma do portal
-        ]
-
-        # SA — rasante do chão. Alcance 720: lasers morrem em
-        # x~450; spawn e zona de gravação à esquerda são seguros.
-        sa = Sentinela(1105, 0, "ESQUERDA", cooldown=1.0, vel_laser=480,
-                       timer_inicial=0.0, alcance=720)
-        sa.apoiar_no_chao()
-        # Empurra a torre para o canto inferior direito para
-        # TAMPAR a marca d'água do fundo. (Ajuste fino: mexa
-        # nesses +7 / +25 se a marca ainda aparecer.)
-        sa.set_position(sa.x + 7, sa.y + 25)
-
-        # SB — varre a cabeça do clone de P2 e o pulo no chão
+        sa = Sentinela(1105, 0, "ESQUERDA", cooldown=0.95, vel_laser=480,
+                       timer_inicial=0.0, alcance=720)       # rasante; spawn seguro
+        sa.apoiar_no_chao(chao)
         sb = Sentinela(1105, 0, "ESQUERDA", cooldown=2.0, vel_laser=420, timer_inicial=0.7)
-        sb.posicionar_cano_em(470)
-
-        # SC — varre a cabeça do clone de P3 (salto final)
+        sb.posicionar_cano_em(490)   # varre BJ, cabeça-de-clone em P2 e quem descansa em P2
         sc = Sentinela(-70, 0, "DIREITA", cooldown=2.4, vel_laser=400, timer_inicial=0.0)
-        sc.posicionar_cano_em(250)
-
-        # SD — varre quem está de pé em P3
+        sc.posicionar_cano_em(250)   # cabeça do clone de P3 (salto final)
         sd = Sentinela(-70, 0, "DIREITA", cooldown=2.6, vel_laser=380, timer_inicial=1.3)
-        sd.posicionar_cano_em(350)
-
+        sd.posicionar_cano_em(350)   # quem está de pé em P3
         fase["sentinelas"] = [sa, sb, sc, sd]
-
-        # Pedestais sob as torres flutuantes (SA já está no chão)
         fase["plataformas"] += [pedestal_para(sb), pedestal_para(sc), pedestal_para(sd)]
 
+        fase["botoes"] = [botao_na_laje(390, BJ)]
+
         cubo_chao = Coletavel(1030, 0)
-        cubo_chao.apoiar_no_chao()
+        cubo_chao.apoiar_no_chao(chao)
         fase["coletaveis"] = [
-            Coletavel(70, 350),      # 1: BOCA DO CANHÃO da SD (esquerda)
-            cubo_chao,               # 2: zona de fogo da SA (direita)
-            Coletavel(990, 230),     # 3: arco do salto final (topo)
+            Coletavel(250, 330),     # salto p/ a esquerda a partir da BJ (linha SB)
+            cubo_chao,               # zona de fogo da SA (escudo)
+            Coletavel(990, 230),     # arco do salto final (linha SC)
         ]
 
     elif numero == 3:
         # ==================================================
-        # FASE 3 — "PROTOCOLO FINAL"
-        #
-        # A ESCADA TRIPLA (esquerda): L1 (545) alcançável do
-        # chão; L2 (350) exige clone em L1; TOPO (180) exige
-        # OUTRO clone em L2 — dois empilhamentos seguidos.
-        # Depois, a TRAVESSIA aérea: TOPO → MID (830, 260) →
-        # PF (990, 380), onde está o portal.
-        #
-        # CORREDORES: SG rasante (atira p/ a DIREITA, alcance
-        # limitado) fecha o chão da direita — o lado esquerdo
-        # e o spawn são seguros; SH (y~250) varre a cabeça do
-        # clone de L2 E a plataforma MID; SI (y~140) varre o
-        # TOPO: sem acampar lá em cima; SJ (y~420) varre a
-        # cabeça do clone de L1 E a plataforma do portal — a
-        # chegada é cronometrada.
-        #
-        # OS 3 CUBOS — espalhados pelos 3 cantos do mapa:
-        #  1. PICO (topo-esquerda): flutua acima do TOPO, na
-        #     linha da SI — só após a escada tripla, com um
-        #     pulo cronometrado no ponto mais alto do jogo.
-        #  2. ZONA DE FOGO (direita, chão): na varredura da SG
-        #     — clone-escudo correndo para a DIREITA.
-        #  3. TRAVESSIA (centro-alto): flutua no abismo entre
-        #     TOPO e MID, cruzado pela linha da SH — pega-se
-        #     em pleno voo; errou, caiu no chão varrido.
+        # FASE 3 — "A FENDA"
+        # Escada TRIPLA (L1→L2→TOPO, dois clones-degrau) +
+        # travessia MID→PF. Rasante SG atira p/ a DIREITA:
+        # o BOTÃO fica DENTRO da zona de fogo — a primeira
+        # entrada exige gravar um clone ANDANDO da zona
+        # segura até parar na frente (escudo), e a estátua
+        # do botão se auto-protege absorvendo os tiros.
+        # Clones no Difícil: escudo, botão, L1, L2 = 4 (exato).
         # ==================================================
-        fase["portal"] = Portal(1045, 293)   # sobre PF
+        L1 = Plataforma(150, 545)
+        L2 = Plataforma(330, 350)
+        TOPO = Plataforma(620, 180)
+        MID = Plataforma(830, 260)
+        PF = Plataforma(990, 380)
+        fase["plataformas"] = [L1, L2, TOPO, MID, PF]
+        fase["portal"] = portal_sobre(PF, img_portal)
 
-        fase["plataformas"] = [
-            Plataforma(150, 545),    # L1 (alcançável do chão)
-            Plataforma(330, 350),    # L2 (clone-escada em L1)
-            Plataforma(620, 180),    # TOPO (clone-escada em L2)
-            Plataforma(830, 260),    # MID — travessia
-            Plataforma(990, 380),    # PF — plataforma do portal
-        ]
-
-        # SG — rasante atirando para a DIREITA. Alcance 500:
-        # cobre x~737..1237; o lado esquerdo do mapa é seguro.
-        sg = Sentinela(560, 0, "DIREITA", cooldown=1.0, vel_laser=480,
-                       timer_inicial=0.0, alcance=500)
-        sg.apoiar_no_chao()
-
-        # SH — varre a cabeça do clone de L2, a MID e o cubo 3
+        sg = Sentinela(560, 0, "DIREITA", cooldown=0.9, vel_laser=480,
+                       timer_inicial=0.0, alcance=500)       # zona de fogo x~737..1237
+        sg.apoiar_no_chao(chao)
         sh = Sentinela(1105, 0, "ESQUERDA", cooldown=2.2, vel_laser=420, timer_inicial=0.0)
-        sh.posicionar_cano_em(250)
-
-        # SI — varre o TOPO e o salto do cubo do Pico
+        sh.posicionar_cano_em(250)   # cabeça do clone de L2 + MID + cubo da travessia
         si = Sentinela(-70, 0, "DIREITA", cooldown=2.6, vel_laser=400, timer_inicial=1.0)
-        si.posicionar_cano_em(140)
-
-        # SJ — varre a cabeça do clone de L1 e a chegada ao portal
+        si.posicionar_cano_em(140)   # TOPO + cubo do Pico
         sj = Sentinela(1105, 0, "ESQUERDA", cooldown=2.4, vel_laser=410, timer_inicial=1.2)
-        sj.posicionar_cano_em(420)
-
+        sj.posicionar_cano_em(420)   # cabeça do clone de L1 + chegada ao portal
         fase["sentinelas"] = [sg, sh, si, sj]
-
-        # Pedestais sob as torres flutuantes (SG já está no chão)
         fase["plataformas"] += [pedestal_para(sh), pedestal_para(si), pedestal_para(sj)]
 
-        cubo_chao = Coletavel(900, 0)
-        cubo_chao.apoiar_no_chao()
+        fase["botoes"] = [botao_no_chao(820, chao)]   # dentro do fogo da SG
+
+        cubo_chao = Coletavel(1050, 0)
+        cubo_chao.apoiar_no_chao(chao)
         fase["coletaveis"] = [
-            Coletavel(660, 60),      # 1: PICO (acima do TOPO, linha da SI)
-            cubo_chao,               # 2: zona de fogo da SG (direita)
-            Coletavel(760, 190),     # 3: abismo da TRAVESSIA (linha da SH)
+            Coletavel(660, 60),      # PICO (linha da SI)
+            cubo_chao,               # fundo da zona de fogo
+            Coletavel(760, 190),     # abismo da travessia (linha da SH)
+        ]
+
+    elif numero == 4:
+        # ==================================================
+        # FASE 4 — "NÚCLEO"  (portal VERMELHO → cutscene)
+        # Escada dupla Q1→Q2→Q3 e SALTO COMPROMETIDO de 212px
+        # até a plataforma do portal (o pulo viaja ~224: sem
+        # margem para hesitar). BOTÃO na plataforma BA, varrida
+        # pela SL: fita com PULOS obrigatória. O chão direito
+        # é zona de fogo da rasante SK — inclusive o caminho
+        # até a BA (escudo ANDANDO na frente).
+        # Cubo do botão pego durante a própria gravação dos
+        # pulos; cubo do vão pego no salto comprometido.
+        # Clones no Difícil: escudo, botão, Q1, Q2 = 4 (exato).
+        # ==================================================
+        Q1 = Plataforma(180, 530)
+        Q2 = Plataforma(430, 340)
+        Q3 = Plataforma(700, 200)
+        QP = Plataforma(1050, 320)   # plataforma do portal
+        BA = Plataforma(880, 530)    # plataforma do botão
+        fase["plataformas"] = [Q1, Q2, Q3, QP, BA]
+        fase["portal"] = portal_sobre(QP, img_portal)
+
+        sk = Sentinela(1105, 0, "ESQUERDA", cooldown=0.95, vel_laser=480,
+                       timer_inicial=0.0, alcance=700)       # rasante; spawn seguro
+        sk.apoiar_no_chao(chao)
+        sl = Sentinela(1105, 0, "ESQUERDA", cooldown=2.1, vel_laser=420, timer_inicial=1.0)
+        sl.posicionar_cano_em(520)   # varre a BA (botão) → fita com pulos
+        sn = Sentinela(-70, 0, "DIREITA", cooldown=2.5, vel_laser=400, timer_inicial=0.0)
+        sn.posicionar_cano_em(160)   # varre Q3 e o salto comprometido
+        sp = Sentinela(1105, 0, "ESQUERDA", cooldown=2.3, vel_laser=410, timer_inicial=0.6)
+        sp.posicionar_cano_em(260)   # cabeça do clone de Q2
+        fase["sentinelas"] = [sk, sl, sn, sp]
+        fase["plataformas"] += [pedestal_para(sl), pedestal_para(sn), pedestal_para(sp)]
+
+        fase["botoes"] = [botao_na_laje(940, BA)]
+
+        cubo_chao = Coletavel(1080, 0)
+        cubo_chao.apoiar_no_chao(chao)
+        fase["coletaveis"] = [
+            Coletavel(920, 120),     # vão Q3→QP (salto comprometido, linha SN)
+            cubo_chao,               # zona de fogo da SK
+            Coletavel(860, 390),     # acima da BA (pego pulando no botão, linha SL)
+        ]
+
+    elif numero == 5:
+        # ==================================================
+        # FASE 5 — "MUNDO BRANCO"  (pós-cutscene)
+        # TUDO INVERTIDO: o progresso é da DIREITA para a
+        # ESQUERDA (torre W1→W2→W3 e portal roxo no alto-esq).
+        # A rasante SR fica no MEIO do mapa atirando p/ a
+        # direita: o centro é zona de fogo, o spawn e o canto
+        # do portal são seguros no chão. BOTÃO na plataforma
+        # BB (canto direito), varrida pela SS → fita com pulos.
+        # Clones no Difícil: escudo, botão, W1, W2 = 4 (exato).
+        # ==================================================
+        W1 = Plataforma(900, 565)
+        W2 = Plataforma(650, 360)
+        W3 = Plataforma(380, 170)
+        WP = Plataforma(90, 290)     # plataforma do portal (alto-esquerda)
+        BB = Plataforma(1050, 540)   # plataforma do botão (direita)
+        fase["plataformas"] = [W1, W2, W3, WP, BB]
+        fase["portal"] = portal_sobre(WP, img_portal)
+
+        sr = Sentinela(200, 0, "DIREITA", cooldown=0.9, vel_laser=480,
+                       timer_inicial=0.0, alcance=500)       # fogo no MEIO (x~377..877)
+        sr.apoiar_no_chao(chao)
+        ss = Sentinela(1105, 0, "ESQUERDA", cooldown=2.0, vel_laser=420, timer_inicial=0.5)
+        ss.posicionar_cano_em(530)   # varre a BB (botão) → fita com pulos
+        st = Sentinela(-70, 0, "DIREITA", cooldown=2.4, vel_laser=400, timer_inicial=0.0)
+        st.posicionar_cano_em(250)   # cabeça do clone de W2
+        su = Sentinela(1105, 0, "ESQUERDA", cooldown=2.6, vel_laser=390, timer_inicial=1.2)
+        su.posicionar_cano_em(130)   # W3 + salto final para o portal
+        fase["sentinelas"] = [sr, ss, st, su]
+        fase["plataformas"] += [pedestal_para(ss), pedestal_para(st), pedestal_para(su)]
+
+        fase["botoes"] = [botao_na_laje(1110, BB)]
+
+        cubo_chao = Coletavel(600, 0)
+        cubo_chao.apoiar_no_chao(chao)
+        fase["coletaveis"] = [
+            Coletavel(230, 90),      # vão W3→WP (linha SU)
+            cubo_chao,               # zona de fogo central (escudo)
+            Coletavel(1080, 400),    # acima da BB (pego pulando no botão)
+        ]
+
+    elif numero == 6:
+        # ==================================================
+        # FASE 6 — "SINGULARIDADE"  (final)
+        # DOIS BOTÕES simultâneos: BT-A na plataforma BAA
+        # varrida pela SX (fita com pulos) e BT-B no meio da
+        # zona de fogo da rasante SY — a MESMA FITA precisa
+        # ANDAR da zona segura até o botão e PARAR sobre ele:
+        # um único clone faz escudo E botão, intermitente a
+        # cada loop (a entrada no portal é sincronizada).
+        # Escada dupla X1→X2→X3, travessia XMID e chegada ao
+        # portal varrida pela SV. A fase mais difícil.
+        # Clones no Difícil: fita-escudo/botão-B, botão-A,
+        # X1, X2 = 4 (exato).
+        # ==================================================
+        X1 = Plataforma(150, 500)
+        X2 = Plataforma(360, 310)
+        X3 = Plataforma(640, 170)
+        XMID = Plataforma(850, 210)
+        XP = Plataforma(1070, 290)   # plataforma do portal
+        BAA = Plataforma(1050, 490)  # plataforma do botão A
+        fase["plataformas"] = [X1, X2, X3, XMID, XP, BAA]
+        fase["portal"] = portal_sobre(XP, img_portal)
+
+        sy = Sentinela(250, 0, "DIREITA", cooldown=0.9, vel_laser=480,
+                       timer_inicial=0.0, alcance=450)       # zona de fogo x~427..877
+        sy.apoiar_no_chao(chao)
+        sx = Sentinela(1105, 0, "ESQUERDA", cooldown=2.0, vel_laser=420, timer_inicial=0.7)
+        sx.posicionar_cano_em(480)   # varre a BAA (botão A) → fita com pulos
+        sw = Sentinela(1105, 0, "ESQUERDA", cooldown=2.2, vel_laser=410, timer_inicial=1.1)
+        sw.posicionar_cano_em(200)   # varre X3 e XMID (travessia dupla)
+        sv = Sentinela(-70, 0, "DIREITA", cooldown=2.5, vel_laser=400, timer_inicial=0.4)
+        sv.posicionar_cano_em(300)   # varre a plataforma do portal
+        fase["sentinelas"] = [sy, sx, sw, sv]
+        fase["plataformas"] += [pedestal_para(sx), pedestal_para(sw), pedestal_para(sv)]
+
+        fase["botoes"] = [
+            botao_na_laje(1110, BAA),        # BT-A (fita com pulos)
+            botao_no_chao(700, chao),        # BT-B (fita anda + para; escudo/botão 2 em 1)
+        ]
+
+        cubo_chao = Coletavel(500, 0)
+        cubo_chao.apoiar_no_chao(chao)
+        fase["coletaveis"] = [
+            Coletavel(770, 100),     # vão X3→XMID (linha SW)
+            cubo_chao,               # zona de fogo da SY (escudo intermitente)
+            Coletavel(1080, 360),    # acima da BAA (pego pulando no botão A)
         ]
 
     return fase
@@ -276,55 +402,57 @@ def main():
     relogio = pygame.time.Clock()
 
     # === FUNDOS DAS FASES ===
-    try:
-        fundo_fase1 = GameImage("assets/fase1.jpg")
-        fundo_fase1.image = pygame.transform.smoothscale(fundo_fase1.image, (janela.width, janela.height))
-    except:
-        fundo_fase1 = None
+    fundos = {}
+    for num, arq in FUNDO_FASE_ARQ.items():
+        try:
+            g = GameImage(arq)
+            g.image = pygame.transform.smoothscale(g.image, (janela.width, janela.height))
+            fundos[num] = g
+        except Exception:
+            fundos[num] = None
 
-    try:
-        fundo_fase2 = GameImage("assets/fase2.jpg")
-        fundo_fase2.image = pygame.transform.smoothscale(fundo_fase2.image, (janela.width, janela.height))
-    except:
-        fundo_fase2 = None
-
-    try:
-        fundo_fase3 = GameImage("assets/fase3.jpg")
-        fundo_fase3.image = pygame.transform.smoothscale(fundo_fase3.image, (janela.width, janela.height))
-    except:
-        fundo_fase3 = None
-
-    # Fundo da tela de finalização (para não repetir o menu)
+    # Fundo da tela de finalização
     try:
         fundo_final = GameImage("assets/telafinal.jpg")
         fundo_final.image = pygame.transform.smoothscale(fundo_final.image, (janela.width, janela.height))
     except:
         fundo_final = None
 
-    # Arte do "JOGO COMPLETADO" (substitui o texto verde)
+    # Arte do "JOGO COMPLETADO"
     try:
         img_frase_final = Sprite("assets/frasefinal.png")
         img_frase_final.set_position(janela.width / 2 - img_frase_final.width / 2, 60)
     except:
         img_frase_final = None
 
-    # === FUNDO ANIMADO DO MENU ===
+    # === FUNDO ANIMADO DO MENU (frame_000000.jpg .. frame_000150.jpg) ===
     frames_menu = []
-    TOTAL_DE_FRAMES = 151  # frame_000000.jpg ... frame_000150.jpg
     try:
-        print("Carregando vídeo do menu em resolução nativa... Aguarde.")
-        for i in range(TOTAL_DE_FRAMES):
-            frame = GameImage(f"assets/menu_frames/frame_{i:06d}.jpg")
-            frames_menu.append(frame)
-        print("Vídeo carregado com sucesso!")
+        print("Carregando vídeo do menu... Aguarde.")
+        for i in range(151):
+            frames_menu.append(GameImage(f"assets/menu_frames/frame_{i:06d}.jpg"))
+        print("Vídeo do menu carregado!")
     except Exception as e:
-        print(f"Aviso: Não achou os frames do vídeo. Erro: {e}")
+        print(f"Aviso: Não achou os frames do menu. Erro: {e}")
         frames_menu = []
+
+    # === CUTSCENE (entre a fase 4 e a fase 5) ===
+    frames_cutscene = []
+    try:
+        print("Carregando cutscene... Aguarde.")
+        for i in range(151):
+            frames_cutscene.append(GameImage(f"assets/cutscene/frame_{i:06d}.jpg"))
+        print("Cutscene carregada!")
+    except Exception as e:
+        print(f"Aviso: Não achou os frames da cutscene. Erro: {e}")
+        frames_cutscene = []
 
     frame_atual = 0
     tempo_frame = 0
+    cut_frame = 0
+    cut_timer = 0.0
 
-    # === TÍTULO E BOTÕES ===
+    # === TÍTULO E BOTÕES DO MENU ===
     img_titulo = Sprite("assets/titulo.png")
     img_titulo.set_position(janela.width / 2 - img_titulo.width / 2, -40)
 
@@ -348,7 +476,7 @@ def main():
     # === VARIÁVEIS DE CONTROLE ===
     estado_atual = config.MENU
     fase_atual = 1
-    fundo_ativo = fundo_fase1
+    fundo_ativo = fundos.get(1)
     click_cooldown = 0
 
     limite_clones = 6    # Definido pela dificuldade
@@ -359,10 +487,9 @@ def main():
     tecla_e = False
     tecla_q = False
 
-    # --- Temporizador e ranking ---
-    tempo_jogo = 0.0        # cronômetro total da run (não zera na morte)
-    tempo_final = 0.0       # tempo congelado ao terminar o jogo
-    nome_jogador = ""       # digitado na tela de nome
+    tempo_jogo = 0.0
+    tempo_final = 0.0
+    nome_jogador = ""
     ranking = carregar_ranking()
 
     fase = criar_fase(1)
@@ -371,13 +498,10 @@ def main():
     musica_tocando = None
 
     # ------------------------------------------------------
-    # Funções auxiliares (usam as variáveis locais acima)
-    # ------------------------------------------------------
     def resetar_fase():
         """Reseta a fase atual inteira: posição do Echo, clones,
-        lasers, cubos coletados e timers das sentinelas.
-        (O cronômetro da run NÃO reseta: morrer custa tempo.)"""
-        echo.set_position(100, janela.height - config.CHAO_Y_OFFSET - echo.height)
+        lasers, cubos e timers. (O cronômetro NÃO reseta.)"""
+        echo.set_position(100, fase["chao"] - echo.height)
         echo.vel_y = 0
         echo.gravando = False
         echo.historico_acoes.clear()
@@ -392,7 +516,7 @@ def main():
         nonlocal fase, fase_atual, fundo_ativo
         fase_atual = numero
         fase = criar_fase(numero)
-        fundo_ativo = {1: fundo_fase1, 2: fundo_fase2, 3: fundo_fase3}.get(numero)
+        fundo_ativo = fundos.get(numero)
         resetar_fase()
 
     # ======================================================
@@ -413,6 +537,8 @@ def main():
                 fundo_ativo.draw()
             else:
                 janela.set_background_color((10, 15, 20))
+        elif estado_atual == ESTADO_CUTSCENE:
+            janela.set_background_color((0, 0, 0))
         elif estado_atual in (ESTADO_NOME, config.VITORIA) and fundo_final:
             fundo_final.draw()
         else:
@@ -429,12 +555,11 @@ def main():
 
         # === MÚSICA ===
         if estado_atual in [config.MENU, config.DIFICULDADE, config.RANKING]:
-            # Só carrega e dá play se a música do menu já não estiver tocando
             if musica_tocando != "MENU":
                 try:
-                    pygame.mixer.music.load("assets/som_menu.ogg")  # Substitua pelo nome do seu arquivo
-                    pygame.mixer.music.set_volume(0.1)  # Volume opcional (0.0 a 1.0)
-                    pygame.mixer.music.play(-1)  # O -1 faz a música repetir em loop infinito
+                    pygame.mixer.music.load("assets/som_menu.ogg")
+                    pygame.mixer.music.set_volume(0.1)
+                    pygame.mixer.music.play(-1)
                     musica_tocando = "MENU"
                 except Exception as e:
                     print("Não achou o som do menu:", e)
@@ -443,18 +568,18 @@ def main():
         elif estado_atual == config.JOGANDO:
             if musica_tocando != "FASE":
                 try:
-                    pygame.mixer.music.load("assets/som_fase.ogg")  # Substitua pelo nome do seu arquivo
-                    pygame.mixer.music.set_volume(0.1)  # Deixei o som da fase um pouco mais baixo
+                    pygame.mixer.music.load("assets/som_fase.mp3")
+                    pygame.mixer.music.set_volume(0.1)
                     pygame.mixer.music.play(-1)
                     musica_tocando = "FASE"
                 except Exception as e:
                     print("Não achou o som da fase:", e)
                     musica_tocando = "ERRO"
 
-        elif estado_atual in (config.VITORIA, ESTADO_NOME):
-            if musica_tocando != "VITORIA":
-                pygame.mixer.music.stop()  # Para a música na finalização
-                musica_tocando = "VITORIA"
+        elif estado_atual in (config.VITORIA, ESTADO_NOME, ESTADO_CUTSCENE):
+            if musica_tocando != "PARADA":
+                pygame.mixer.music.stop()
+                musica_tocando = "PARADA"
 
         # ==================================================
         # ESTADO: MENU PRINCIPAL
@@ -465,14 +590,13 @@ def main():
             btn_ranking.draw()
             btn_sair.draw()
 
-            # Painel de créditos no canto inferior direito —
-            # também serve para TAMPAR a marca d'água do fundo.
+            # Painel de créditos (também tampa a marca d'água)
             tela = pygame.display.get_surface()
-            pygame.draw.rect(tela, (8, 16, 22), (janela.width - 235, janela.height - 190, 235, 105))
-            pygame.draw.rect(tela, (0, 180, 200), (janela.width - 235, janela.height - 190, 235, 105), 2)
-            janela.draw_text("Feito por:", janela.width - 215, janela.height - 175, size=20, color=(0, 255, 255), bold=True)
-            janela.draw_text("Kauê Lopes", janela.width - 215, janela.height - 153, size=20, color=(220, 220, 220))
-            janela.draw_text("Arthur Ribeiro", janela.width - 215, janela.height - 127, size=20, color=(220, 220, 220))
+            pygame.draw.rect(tela, (8, 16, 22), (janela.width - 245, janela.height - 180, 245, 180))
+            pygame.draw.rect(tela, (0, 180, 200), (janela.width - 245, janela.height - 180, 245, 180), 2)
+            janela.draw_text("Feito por:", janela.width - 220, janela.height - 130, size=22, color=(0, 255, 255), bold=True)
+            janela.draw_text("Kauê Lopes", janela.width - 220, janela.height - 98, size=22, color=(220, 220, 220))
+            janela.draw_text("Arthur Ribeiro", janela.width - 220, janela.height - 66, size=22, color=(220, 220, 220))
 
             if mouse.is_button_pressed(1) and click_cooldown <= 0:
                 if mouse.is_over_object(btn_jogar):
@@ -513,7 +637,7 @@ def main():
                 if entrar_no_jogo:
                     estado_atual = config.JOGANDO
                     click_cooldown = 0.3
-                    tempo_jogo = 0.0   # nova run: cronômetro zera aqui
+                    tempo_jogo = 0.0
                     carregar_fase(1)
 
         # ==================================================
@@ -522,7 +646,6 @@ def main():
         elif estado_atual == config.RANKING:
             janela.draw_text("RANKING DOS JOGADORES", janela.width / 2 - 190, 70, size=32, color=(255, 255, 255), bold=True)
 
-            # Cabeçalho das colunas
             col_pos = janela.width / 2 - 280
             col_nome = janela.width / 2 - 220
             col_tempo = janela.width / 2 + 60
@@ -551,11 +674,28 @@ def main():
                     click_cooldown = 0.3
 
         # ==================================================
+        # ESTADO: CUTSCENE (fase 4 → fase 5)
+        # ==================================================
+        elif estado_atual == ESTADO_CUTSCENE:
+            if len(frames_cutscene) == 0:
+                carregar_fase(5)
+                estado_atual = config.JOGANDO
+            else:
+                frames_cutscene[cut_frame].draw()
+                cut_timer += delta_time
+                if cut_timer >= 0.045:      # ~22 fps → ~6.8s de cena
+                    cut_timer = 0.0
+                    cut_frame += 1
+                    if cut_frame >= len(frames_cutscene):
+                        carregar_fase(5)
+                        estado_atual = config.JOGANDO
+
+        # ==================================================
         # ESTADO: JOGANDO
         # ==================================================
         elif estado_atual == config.JOGANDO:
             tempo_jogo += delta_time
-            chao_y = janela.height - config.CHAO_Y_OFFSET - echo.height
+            chao_y = fase["chao"] - echo.height
 
             # --- Reset manual (R) ---
             if teclado.key_pressed("R"):
@@ -591,10 +731,8 @@ def main():
                 echo.vel_y = 0
                 echo.no_chao = True
 
-            # --- Colisão com plataformas (pouso pela LAJE VISÍVEL) ---
-            # Os pés visuais precisam CRUZAR o topo visível da laje
-            # neste frame (vel_y * delta_time) — sem teletransporte.
-            PES_VISUAL = 105  # base do corpo dentro do frame de 112px
+            # --- Pouso nas plataformas (laje visível, sem teleporte) ---
+            PES_VISUAL = 105
             if echo.vel_y > 0:
                 pes = echo.y + PES_VISUAL
                 pes_antes = pes - echo.vel_y * delta_time
@@ -610,14 +748,14 @@ def main():
                         echo.no_chao = True
                         break
 
-            # --- Pisar na cabeça dos clones (mesma regra de cruzamento) ---
+            # --- Pisar na cabeça dos clones ---
             if echo.vel_y > 0:
                 pes = echo.y + PES_VISUAL
                 pes_antes = pes - echo.vel_y * delta_time
                 for eco_clone in ecos:
                     if not eco_clone.ativo:
                         continue
-                    topo_cabeca = eco_clone.y + 5  # topo visível do corpo do clone
+                    topo_cabeca = eco_clone.y + 5
                     hb_clone = eco_clone.get_hitbox()
                     alinhado = (echo.x + echo.width - 15) > hb_clone.left and (echo.x + 15) < hb_clone.right
                     if alinhado and pes_antes <= topo_cabeca + 6 and pes >= topo_cabeca:
@@ -632,49 +770,58 @@ def main():
             for eco in ecos:
                 eco.reproduzir()
 
-            # --- Sentinelas: gerenciam o próprio cooldown ---
+            # --- Sentinelas ---
             for sent in fase["sentinelas"]:
                 sent.atualizar(delta_time, lasers)
 
-            # --- Lasers: movimento e colisões (hitbox visível) ---
+            # --- Lasers ---
             echo_morreu = False
             for las in lasers:
                 las.mover(delta_time)
                 hit_laser = las.get_hitbox()
 
-                # 1) Laser x Echo principal → morte, reseta a fase
                 if hit_laser.colliderect(echo.get_hitbox(margem=4)):
                     echo_morreu = True
                     break
 
-                # 2) Laser x Clone → o clone absorve o tiro e o
-                #    laser some, protegendo o jogador.
                 for eco in ecos:
                     if eco.ativo and hit_laser.colliderect(eco.get_hitbox(margem=0)):
                         las.ativo = False
                         break
 
-                # 3) Laser saiu da tela
                 if las.fora_da_tela():
                     las.ativo = False
 
-            if echo_morreu:
-                resetar_fase()
-            else:
-                lasers = [l for l in lasers if l.ativo]
+            
 
-            # --- Coletáveis: os 3 cubos destravam o portal ---
+            # --- Botões: pressão em TEMPO REAL (Echo ou clone ativo) ---
+            hb_echo = echo.get_hitbox()
+            for bot in fase["botoes"]:
+                zona = bot.get_hitbox()
+                apertado = zona.colliderect(hb_echo)
+                if not apertado:
+                    for eco in ecos:
+                        if eco.ativo and zona.colliderect(eco.get_hitbox()):
+                            apertado = True
+                            break
+                bot.pressionado = apertado
+
+            botoes_ok = all(b.pressionado for b in fase["botoes"])
+
+            # --- Coletáveis ---
             for col in fase["coletaveis"]:
-                if not col.coletado and echo.get_hitbox().colliderect(col.get_hitbox()):
+                if not col.coletado and hb_echo.colliderect(col.get_hitbox()):
                     col.coletado = True
             cubos_pegos = sum(1 for c in fase["coletaveis"] if c.coletado)
             cubos_total = len(fase["coletaveis"])
-            portal_aberto = cubos_pegos >= cubos_total
+            portal_aberto = (cubos_pegos >= cubos_total) and botoes_ok
 
             # --- Renderização ---
             fase["portal"].draw()
             for plat in fase["plataformas"]:
                 plat.draw()
+            for bot in fase["botoes"]:
+                bot.draw()
             for col in fase["coletaveis"]:
                 col.draw()
             for sent in fase["sentinelas"]:
@@ -688,34 +835,46 @@ def main():
             # --- HUD ---
             clones_restantes = limite_clones - len(ecos)
             janela.draw_text(f"Clones Disp: {clones_restantes} / {limite_clones}", 20, 20, size=28, color=(0, 255, 255), bold=True)
-            cor_cubos = (0, 255, 100) if portal_aberto else (255, 200, 0)
+            cor_cubos = (0, 255, 100) if cubos_pegos >= cubos_total else (255, 200, 0)
             janela.draw_text(f"Cubos: {cubos_pegos} / {cubos_total}", 20, 55, size=28, color=cor_cubos, bold=True)
-            janela.draw_text(f"Fase {fase_atual}", 20, 90, size=24, color=(255, 255, 255), bold=True)
+            if len(fase["botoes"]) > 0:
+                n_press = sum(1 for b in fase["botoes"] if b.pressionado)
+                cor_bot = (0, 255, 100) if botoes_ok else (255, 80, 80)
+                janela.draw_text(f"Botoes: {n_press} / {len(fase['botoes'])}", 20, 90, size=28, color=cor_bot, bold=True)
+                y_fase = 125
+            else:
+                y_fase = 90
+            janela.draw_text(f"Fase {fase_atual}", 20, y_fase, size=24, color=(255, 255, 255), bold=True)
             if echo.gravando:
-                janela.draw_text("REC", 20, 120, size=24, color=(255, 0, 0), bold=True)
+                janela.draw_text("REC", 20, y_fase + 30, size=24, color=(255, 0, 0), bold=True)
 
-            # Cronômetro discreto (canto superior direito)
             janela.draw_text(formatar_tempo(tempo_jogo), janela.width - 110, 20, size=22, color=(160, 160, 160))
 
-            # --- Transição de fase (portal só abre com os 3 cubos) ---
+            # --- Transição de fase ---
             if echo.collided(fase["portal"]):
                 if portal_aberto:
-                    if fase_atual < 3:
+                    if fase_atual == 4:
+                        # Portal VERMELHO especial → cutscene → mundo branco
+                        cut_frame = 0
+                        cut_timer = 0.0
+                        estado_atual = ESTADO_CUTSCENE
+                    elif fase_atual < FASE_FINAL:
                         carregar_fase(fase_atual + 1)
                     else:
                         tempo_final = tempo_jogo
                         nome_jogador = ""
                         estado_atual = ESTADO_NOME
                 else:
-                    janela.draw_text(f"PORTAL BLOQUEADO: faltam {cubos_total - cubos_pegos} cubo(s)!",
-                                     janela.width / 2 - 220, 120, size=26, color=(255, 80, 80), bold=True)
+                    if cubos_pegos < cubos_total:
+                        msg = f"PORTAL BLOQUEADO: faltam {cubos_total - cubos_pegos} cubo(s)!"
+                    else:
+                        msg = "PORTAL INSTAVEL: mantenha o(s) botao(oes) pressionado(s)!"
+                    janela.draw_text(msg, janela.width / 2 - 260, 120, size=26, color=(255, 80, 80), bold=True)
 
         # ==================================================
         # ESTADO: DIGITAÇÃO DO NOME (fim de jogo)
         # ==================================================
         elif estado_atual == ESTADO_NOME:
-            # Entrada de texto lida direto dos eventos do pygame
-            # (a PPlay usa key.get_pressed, então não há conflito).
             for evento in pygame.event.get():
                 if evento.type == pygame.QUIT:
                     pygame.quit()

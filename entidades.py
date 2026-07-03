@@ -1,5 +1,6 @@
 # entidades.py
 import pygame
+import random
 from pplay.sprite import Sprite
 from pplay.window import Window
 import config
@@ -237,9 +238,62 @@ class Eco(Sprite):
 # CENÁRIO
 # ==========================================================
 class Portal(Sprite):
-    def __init__(self, x, y):
-        super().__init__("assets/portal.png", 1)
+    def __init__(self, x, y, imagem="portal.png"):
+        super().__init__(f"assets/{imagem}", 1)
         self.set_position(x, y)
+        self.rect_visual = rect_opaco(self.image)
+
+
+# ==========================================================
+# BOTÃO — placa de pressão: só conta como pressionado
+# enquanto UM CORPO (Echo ou clone ativo) estiver sobre ele
+# EM TEMPO REAL. Clones em loop soltam o botão nos trechos
+# da fita em que saem de cima dele.
+# ==========================================================
+# ==========================================================
+# BOTÃO — placa de pressão: só conta como pressionado
+# enquanto UM CORPO (Echo ou clone ativo) estiver sobre ele
+# EM TEMPO REAL. Clones em loop soltam o botão nos trechos
+# da fita em que saem de cima dele.
+# ==========================================================
+class Botao(Sprite):
+    def __init__(self, x, y):
+        super().__init__("assets/botao.png", 1)
+        self.set_position(x, y)
+        self.rect_visual = rect_opaco(self.image)  # prato ~50x14
+        self.pressionado = False
+        
+        # Salva a imagem original (desativada)
+        self.imagem_normal = self.image
+        
+        # Carrega a imagem ativada (vermelha)
+        try:
+            self.imagem_ativado = pygame.image.load("assets/botao_ativado.png").convert_alpha()
+        except:
+            # Prevenção de erro caso o arquivo não seja encontrado
+            self.imagem_ativado = self.imagem_normal
+
+    def get_hitbox(self):
+        """Zona de pressão: o prato visível + uma faixa acima,
+        para que pés apoiados no prato contem de forma estável."""
+        rv = self.rect_visual
+        return pygame.Rect(int(self.x) + rv.x, int(self.y) + rv.y - 14,
+                           rv.w, rv.h + 14)
+
+    def apoiar_em(self, y_superficie):
+        """Assenta a base visível do prato numa superfície
+        (linha do chão da fase ou topo de laje: plat.y + 46)."""
+        self.set_position(self.x, y_superficie - self.rect_visual.bottom)
+
+    # === NOVO MÉTODO ===
+    def draw(self):
+        """Troca a imagem baseada no estado antes de desenhar na tela."""
+        if self.pressionado:
+            self.image = self.imagem_ativado
+        else:
+            self.image = self.imagem_normal
+            
+        super().draw()
 
 
 class Plataforma(Sprite):
@@ -267,9 +321,10 @@ class Coletavel(Sprite):
         rv = self.rect_visual
         return pygame.Rect(int(self.x) + rv.x, int(self.y) + rv.y, rv.w, rv.h)
 
-    def apoiar_no_chao(self):
-        """Encosta a base VISÍVEL do item no chão (o PNG tem padding)."""
-        chao = config.ALTURA_TELA - config.CHAO_Y_OFFSET
+    def apoiar_no_chao(self, chao=None):
+        """Encosta a base VISÍVEL do item na linha do chão da fase."""
+        if chao is None:
+            chao = config.ALTURA_TELA - config.CHAO_Y_OFFSET
         self.set_position(self.x, chao - self.rect_visual.bottom)
 
     def draw(self):
@@ -281,11 +336,13 @@ class Coletavel(Sprite):
 # LASER — projétil disparado pela Sentinela
 # ==========================================================
 class Laser(Sprite):
-    def __init__(self, x, y, direcao, velocidade=400, alcance=None):
-        super().__init__("assets/laser.png", 1)
+    
+    def __init__(self, x, y, direcao, velocidade=400, alcance=None, imagem="laser.png"):
+        super().__init__(f"assets/{imagem}", 1) # Usa a variável de imagem agora
         self.set_position(x, y)
         self.direcao = direcao
         self.vel_x = velocidade
+        # ... o resto do __init__ continua exatamente igual ...
         self.ativo = True
         # Alcance máximo em px (None = atravessa a tela toda).
         # Usado para criar zonas seguras, como o ponto de spawn.
@@ -357,11 +414,12 @@ class Sentinela(Sprite):
         # Torre visível dentro do canvas (calculada após o flip).
         self.rect_visual = rect_opaco(self.image)
 
-    def apoiar_no_chao(self):
-        """Encosta a BASE VISÍVEL da torre no chão. O canvas de
-        250x200 tem ~45px transparentes abaixo da torre; sem isso
-        a sentinela flutuava e o tiro parecia sair do chão."""
-        chao = config.ALTURA_TELA - config.CHAO_Y_OFFSET
+    def apoiar_no_chao(self, chao=None):
+        """Encosta a BASE VISÍVEL da torre na linha do chão.
+        `chao` permite usar a linha específica da fase (cada
+        fundo tem a rua numa altura diferente)."""
+        if chao is None:
+            chao = config.ALTURA_TELA - config.CHAO_Y_OFFSET
         self.set_position(self.x, chao - self.rect_visual.bottom)
 
     def posicionar_cano_em(self, y_cano):
@@ -382,7 +440,17 @@ class Sentinela(Sprite):
         """Cria o laser exatamente na boca do cano VISÍVEL da
         torre — e não no canto do canvas transparente, que era o
         que fazia o tiro nascer 'no chão, na frente da sentinela'."""
-        novo = Laser(0, 0, self.direcao, self.vel_laser, self.alcance)
+        
+        # Sorteio: 20% de chance (0.2) de ser o laser2.png. 
+        # Você pode alterar esse 0.2 para 0.5 (50%), 0.1 (10%), etc.
+        if random.random() < 0.2:
+            img_escolhida = "laser2.png"
+        else:
+            img_escolhida = "laser.png"
+
+        # Passamos a img_escolhida para o novo Laser
+        novo = Laser(0, 0, self.direcao, self.vel_laser, self.alcance, imagem=img_escolhida)
+        
         lv = novo.rect_visual
         tv = self.rect_visual
 
