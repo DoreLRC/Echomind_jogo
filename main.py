@@ -3,7 +3,7 @@ from pplay.window import Window
 from pplay.gameimage import GameImage
 from pplay.sprite import Sprite
 import config
-from entidades import Echo, Eco, Portal, Plataforma, Sentinela, Laser, Coletavel, Botao
+from entidades import Echo, Eco, Portal, Plataforma, Sentinela, Laser, Coletavel, Botao, SentinelaVoadora, PlataformaMovel
 import pygame
 import json
 import datetime
@@ -133,7 +133,7 @@ def botao_na_laje(x, plataforma):
 # ==========================================================
 def criar_fase(numero):
     fase = {"portal": None, "plataformas": [], "sentinelas": [],
-            "coletaveis": [], "botoes": [],
+            "coletaveis": [], "botoes": [], "voadoras": [], "moveis": [],
             "chao": CHAO_FASE.get(numero, config.ALTURA_TELA - config.CHAO_Y_OFFSET)}
     chao = fase["chao"]
     img_portal = PORTAL_FASE_IMG.get(numero, "portal.png")
@@ -175,6 +175,15 @@ def criar_fase(numero):
             Coletavel(1040, 250),    # TRAVESSIA B→C (topo)
         ]
 
+        # + SENTINELA VOADORA (adição: nada da fase mudou).
+        # Patrulha soltando tiros VERTICAIS com colunas em
+        # x 759..1039: a subida A→B→C e o cubo da travessia
+        # ganham uma chuva móvel — estátua não anula, a
+        # coluna anda junto com o pod.
+        fase["voadoras"] = [SentinelaVoadora(600, 880, 40, cooldown=1.6,
+                            vel_patrulha=90, vel_laser=420,
+                            y_chao=fase["chao"], timer_inicial=0.4)]
+
     elif numero == 2:
         # ==================================================
         # FASE 2 — "ESCALADA SINCRONIZADA"  (chão novo: 700)
@@ -214,6 +223,13 @@ def criar_fase(numero):
             cubo_chao,               # zona de fogo da SA (escudo)
             Coletavel(990, 230),     # arco do salto final (linha SC)
         ]
+
+        # + SENTINELA VOADORA (adição): colunas em x 650..1050
+        # sobre a torre P2/P3 — a escalada e os head-hops agora
+        # dividem atenção com a chuva vertical.
+        fase["voadoras"] = [SentinelaVoadora(491, 891, 30, cooldown=1.5,
+                            vel_patrulha=100, vel_laser=430,
+                            y_chao=fase["chao"], timer_inicial=0.0)]
 
     elif numero == 3:
         # ==================================================
@@ -256,136 +272,173 @@ def criar_fase(numero):
             Coletavel(760, 190),     # abismo da travessia (linha da SH)
         ]
 
+        # + SENTINELA VOADORA (adição): colunas em x 700..1050
+        # sobre a travessia TOPO→MID→PF e a chegada ao portal.
+        fase["voadoras"] = [SentinelaVoadora(541, 891, 25, cooldown=1.6,
+                            vel_patrulha=95, vel_laser=420,
+                            y_chao=fase["chao"], timer_inicial=0.8)]
+
     elif numero == 4:
         # ==================================================
         # FASE 4 — "NÚCLEO"  (portal VERMELHO → cutscene)
-        # Escada dupla Q1→Q2→Q3 e SALTO COMPROMETIDO de 212px
-        # até a plataforma do portal (o pulo viaja ~224: sem
-        # margem para hesitar). BOTÃO na plataforma BA, varrida
-        # pela SL: fita com PULOS obrigatória. O chão direito
-        # é zona de fogo da rasante SK — inclusive o caminho
-        # até a BA (escudo ANDANDO na frente).
-        # Cubo do botão pego durante a própria gravação dos
-        # pulos; cubo do vão pego no salto comprometido.
-        # Clones no Difícil: escudo, botão, Q1, Q2 = 4 (exato).
+        #
+        # BOTÃO MÓVEL: o botão anda montado numa plataforma
+        # móvel (vaivém 520↔760). Estátua NÃO segura: o botão
+        # sai de baixo dela. Só segura uma fita gravada
+        # ANDANDO JUNTO com a plataforma, spawnada (Q) na
+        # fase certa do vaivém — embarque pela Q1, cronometrado.
+        # Escada dupla Q1→Q2→Q3, SALTO COMPROMETIDO de 212px
+        # até o portal (varrido pela SL) e voadora chovendo
+        # sobre o corredor do trem e a torre.
+        # Clones no Difícil: fita-do-trem, Q1, Q2, escudo = 4.
         # ==================================================
         Q1 = Plataforma(180, 530)
         Q2 = Plataforma(430, 340)
         Q3 = Plataforma(700, 200)
         QP = Plataforma(1050, 320)   # plataforma do portal
-        BA = Plataforma(880, 530)    # plataforma do botão
-        fase["plataformas"] = [Q1, Q2, Q3, QP, BA]
+        MB = PlataformaMovel(520, 470, 760, 470, velocidade=120)  # o "trem"
+        fase["plataformas"] = [Q1, Q2, Q3, QP, MB]
+        fase["moveis"] = [MB]
         fase["portal"] = portal_sobre(QP, img_portal)
 
-        sk = Sentinela(1105, 0, "ESQUERDA", cooldown=0.95, vel_laser=480,
+        sk = Sentinela(1105, 0, "ESQUERDA", cooldown=0.9, vel_laser=480,
                        timer_inicial=0.0, alcance=700)       # rasante; spawn seguro
         sk.apoiar_no_chao(chao)
-        sl = Sentinela(1105, 0, "ESQUERDA", cooldown=2.1, vel_laser=420, timer_inicial=1.0)
-        sl.posicionar_cano_em(520)   # varre a BA (botão) → fita com pulos
-        sn = Sentinela(-70, 0, "DIREITA", cooldown=2.5, vel_laser=400, timer_inicial=0.0)
+        sl = Sentinela(1105, 0, "ESQUERDA", cooldown=2.3, vel_laser=420, timer_inicial=1.0)
+        sl.posicionar_cano_em(300)   # varre a chegada ao portal (QP)
+        sn = Sentinela(-70, 0, "DIREITA", cooldown=2.2, vel_laser=400, timer_inicial=0.0)
         sn.posicionar_cano_em(160)   # varre Q3 e o salto comprometido
         sp = Sentinela(1105, 0, "ESQUERDA", cooldown=2.3, vel_laser=410, timer_inicial=0.6)
         sp.posicionar_cano_em(260)   # cabeça do clone de Q2
         fase["sentinelas"] = [sk, sl, sn, sp]
         fase["plataformas"] += [pedestal_para(sl), pedestal_para(sn), pedestal_para(sp)]
 
-        fase["botoes"] = [botao_na_laje(940, BA)]
+        # Voadora: colunas em x 459..919 (torre + corredor do trem)
+        fase["voadoras"] = [SentinelaVoadora(300, 760, 30, cooldown=1.4,
+                            vel_patrulha=105, vel_laser=440,
+                            y_chao=chao, timer_inicial=0.0)]
+
+        bot_trem = Botao(0, 0)
+        bot_trem.montura = MB        # o botão viaja com o trem
+        fase["botoes"] = [bot_trem]
 
         cubo_chao = Coletavel(1080, 0)
         cubo_chao.apoiar_no_chao(chao)
         fase["coletaveis"] = [
             Coletavel(920, 120),     # vão Q3→QP (salto comprometido, linha SN)
-            cubo_chao,               # zona de fogo da SK
-            Coletavel(860, 390),     # acima da BA (pego pulando no botão, linha SL)
+            cubo_chao,               # fundo da zona de fogo da SK
+            Coletavel(640, 330),     # CUBO DO TREM: pulo a partir da plataforma móvel
         ]
 
     elif numero == 5:
         # ==================================================
         # FASE 5 — "MUNDO BRANCO"  (pós-cutscene)
-        # TUDO INVERTIDO: o progresso é da DIREITA para a
-        # ESQUERDA (torre W1→W2→W3 e portal roxo no alto-esq).
-        # A rasante SR fica no MEIO do mapa atirando p/ a
-        # direita: o centro é zona de fogo, o spawn e o canto
-        # do portal são seguros no chão. BOTÃO na plataforma
-        # BB (canto direito), varrida pela SS → fita com pulos.
-        # Clones no Difícil: escudo, botão, W1, W2 = 4 (exato).
+        #
+        # Invertida (progresso p/ a ESQUERDA) e agora com
+        # ELEVADOR: a plataforma do botão BB ficou alta demais
+        # para pular — só se chega de carona no elevador
+        # vertical (860: 540↔390) e saltando no topo do curso.
+        # DOIS botões (BB no alto + BB2 no meio do fogo) +
+        # torre W1→W2→W3 + voadora varrendo a escalada e a
+        # chegada: no Difícil os 4 clones fecham exatos
+        # (W1, W2, BB, BB2) — zero folga, cada morte custa caro.
         # ==================================================
         W1 = Plataforma(900, 565)
         W2 = Plataforma(650, 360)
         W3 = Plataforma(380, 170)
         WP = Plataforma(90, 290)     # plataforma do portal (alto-esquerda)
-        BB = Plataforma(1050, 540)   # plataforma do botão (direita)
-        fase["plataformas"] = [W1, W2, W3, WP, BB]
+        BB = Plataforma(1050, 380)   # plataforma do botão (ALTA: só via elevador)
+        ME = PlataformaMovel(860, 540, 860, 390, velocidade=90)  # elevador
+        fase["plataformas"] = [W1, W2, W3, WP, BB, ME]
+        fase["moveis"] = [ME]
         fase["portal"] = portal_sobre(WP, img_portal)
 
-        sr = Sentinela(200, 0, "DIREITA", cooldown=0.9, vel_laser=480,
+        sr = Sentinela(200, 0, "DIREITA", cooldown=0.85, vel_laser=480,
                        timer_inicial=0.0, alcance=500)       # fogo no MEIO (x~377..877)
         sr.apoiar_no_chao(chao)
-        ss = Sentinela(1105, 0, "ESQUERDA", cooldown=2.0, vel_laser=420, timer_inicial=0.5)
-        ss.posicionar_cano_em(530)   # varre a BB (botão) → fita com pulos
+        ss = Sentinela(1105, 0, "ESQUERDA", cooldown=2.1, vel_laser=420,
+                       timer_inicial=0.5, alcance=150)       # queima-roupa na BB
+        ss.posicionar_cano_em(380)
         st = Sentinela(-70, 0, "DIREITA", cooldown=2.4, vel_laser=400, timer_inicial=0.0)
         st.posicionar_cano_em(250)   # cabeça do clone de W2
-        su = Sentinela(1105, 0, "ESQUERDA", cooldown=2.6, vel_laser=390, timer_inicial=1.2)
+        su = Sentinela(1105, 0, "ESQUERDA", cooldown=2.3, vel_laser=390, timer_inicial=1.2)
         su.posicionar_cano_em(130)   # W3 + salto final para o portal
         fase["sentinelas"] = [sr, ss, st, su]
         fase["plataformas"] += [pedestal_para(ss), pedestal_para(st), pedestal_para(su)]
 
-        fase["botoes"] = [botao_na_laje(1110, BB)]
+        # Voadora: colunas em x 200..800 (escalada + canto do portal)
+        fase["voadoras"] = [SentinelaVoadora(41, 641, 25, cooldown=1.5,
+                            vel_patrulha=100, vel_laser=430,
+                            y_chao=chao, timer_inicial=0.3)]
 
-        cubo_chao = Coletavel(600, 0)
+        bb2 = Botao(600, 0)
+        bb2.apoiar_em(chao)          # no meio da zona de fogo
+        fase["botoes"] = [botao_na_laje(1110, BB), bb2]
+
+        cubo_chao = Coletavel(500, 0)
         cubo_chao.apoiar_no_chao(chao)
         fase["coletaveis"] = [
             Coletavel(230, 90),      # vão W3→WP (linha SU)
-            cubo_chao,               # zona de fogo central (escudo)
-            Coletavel(1080, 400),    # acima da BB (pego pulando no botão)
+            cubo_chao,               # zona de fogo central
+            Coletavel(1080, 250),    # acima da BB (salto no alto do elevador)
         ]
 
     elif numero == 6:
         # ==================================================
         # FASE 6 — "SINGULARIDADE"  (final)
-        # DOIS BOTÕES simultâneos: BT-A na plataforma BAA
-        # varrida pela SX (fita com pulos) e BT-B no meio da
-        # zona de fogo da rasante SY — a MESMA FITA precisa
-        # ANDAR da zona segura até o botão e PARAR sobre ele:
-        # um único clone faz escudo E botão, intermitente a
-        # cada loop (a entrada no portal é sincronizada).
-        # Escada dupla X1→X2→X3, travessia XMID e chegada ao
-        # portal varrida pela SV. A fase mais difícil.
-        # Clones no Difícil: fita-escudo/botão-B, botão-A,
-        # X1, X2 = 4 (exato).
+        #
+        # TRÊS botões, três fitas inteligentes:
+        #  - BOTÃO-TREM montado na plataforma móvel MF
+        #    (480↔720, sobre a zona de fogo): fita cavalgante
+        #    spawnada na fase certa do vaivém;
+        #  - PAR DE PATRULHA (600 e 780, com retenção de 1.2s):
+        #    UMA fita andando entre os dois segura ambos —
+        #    duas estátuas custariam 2 clones e ESTOURAM o
+        #    limite do Difícil: a patrulha é obrigatória.
+        # Escada X1→X2→X3, travessia XMID→XP varrida (SW/SV),
+        # voadora cobrindo o meio do mapa inteiro.
+        # Clones no Difícil: trem, patrulha, X1, X2 = 4 exatos.
         # ==================================================
         X1 = Plataforma(150, 500)
         X2 = Plataforma(360, 310)
         X3 = Plataforma(640, 170)
         XMID = Plataforma(850, 210)
         XP = Plataforma(1070, 290)   # plataforma do portal
-        BAA = Plataforma(1050, 490)  # plataforma do botão A
-        fase["plataformas"] = [X1, X2, X3, XMID, XP, BAA]
+        MF = PlataformaMovel(480, 430, 720, 430, velocidade=115)  # trem da fase 6
+        fase["plataformas"] = [X1, X2, X3, XMID, XP, MF]
+        fase["moveis"] = [MF]
         fase["portal"] = portal_sobre(XP, img_portal)
 
-        sy = Sentinela(250, 0, "DIREITA", cooldown=0.9, vel_laser=480,
+        sy = Sentinela(250, 0, "DIREITA", cooldown=0.85, vel_laser=480,
                        timer_inicial=0.0, alcance=450)       # zona de fogo x~427..877
         sy.apoiar_no_chao(chao)
-        sx = Sentinela(1105, 0, "ESQUERDA", cooldown=2.0, vel_laser=420, timer_inicial=0.7)
-        sx.posicionar_cano_em(480)   # varre a BAA (botão A) → fita com pulos
-        sw = Sentinela(1105, 0, "ESQUERDA", cooldown=2.2, vel_laser=410, timer_inicial=1.1)
-        sw.posicionar_cano_em(200)   # varre X3 e XMID (travessia dupla)
-        sv = Sentinela(-70, 0, "DIREITA", cooldown=2.5, vel_laser=400, timer_inicial=0.4)
-        sv.posicionar_cano_em(300)   # varre a plataforma do portal
-        fase["sentinelas"] = [sy, sx, sw, sv]
-        fase["plataformas"] += [pedestal_para(sx), pedestal_para(sw), pedestal_para(sv)]
+        sw = Sentinela(1105, 0, "ESQUERDA", cooldown=2.0, vel_laser=410, timer_inicial=1.1)
+        sw.posicionar_cano_em(200)   # varre X3 e XMID
+        sv = Sentinela(1105, 0, "ESQUERDA", cooldown=2.4, vel_laser=400,
+                       timer_inicial=0.4, alcance=300)       # chegada ao portal (poupa X2/trem)
+        sv.posicionar_cano_em(300)
+        fase["sentinelas"] = [sy, sw, sv]
+        fase["plataformas"] += [pedestal_para(sw), pedestal_para(sv)]
 
-        fase["botoes"] = [
-            botao_na_laje(1110, BAA),        # BT-A (fita com pulos)
-            botao_no_chao(700, chao),        # BT-B (fita anda + para; escudo/botão 2 em 1)
-        ]
+        # Voadora: colunas em x 409..1009 (fogo + trem + travessia)
+        fase["voadoras"] = [SentinelaVoadora(250, 850, 20, cooldown=1.35,
+                            vel_patrulha=110, vel_laser=440,
+                            y_chao=chao, timer_inicial=0.0)]
 
-        cubo_chao = Coletavel(500, 0)
+        bot_trem = Botao(0, 0)
+        bot_trem.montura = MF
+        b_pat1 = Botao(600, 0, retencao=1.2)
+        b_pat1.apoiar_em(chao)
+        b_pat2 = Botao(780, 0, retencao=1.2)
+        b_pat2.apoiar_em(chao)
+        fase["botoes"] = [bot_trem, b_pat1, b_pat2]
+
+        cubo_chao = Coletavel(480, 0)
         cubo_chao.apoiar_no_chao(chao)
         fase["coletaveis"] = [
             Coletavel(770, 100),     # vão X3→XMID (linha SW)
-            cubo_chao,               # zona de fogo da SY (escudo intermitente)
-            Coletavel(1080, 360),    # acima da BAA (pego pulando no botão A)
+            cubo_chao,               # borda da zona de fogo
+            Coletavel(560, 290),     # CUBO DO TREM da fase 6
         ]
 
     return fase
@@ -425,6 +478,14 @@ def main():
     except:
         img_frase_final = None
 
+    # Tela de carregamento da cutscene (pisca sobre fundo preto)
+    try:
+        img_carregando = Sprite("assets/teladecarregamento.png")
+        img_carregando.set_position(janela.width / 2 - img_carregando.width / 2,
+                                    janela.height / 2 - img_carregando.height / 2)
+    except:
+        img_carregando = None
+
     # === FUNDO ANIMADO DO MENU (frame_000000.jpg .. frame_000150.jpg) ===
     frames_menu = []
     try:
@@ -451,6 +512,8 @@ def main():
     tempo_frame = 0
     cut_frame = 0
     cut_timer = 0.0
+    cut_fase = "PRE"        # PRE (carregando) -> VIDEO -> POS (carregando)
+    cut_fase_timer = 0.0
 
     # === TÍTULO E BOTÕES DO MENU ===
     img_titulo = Sprite("assets/titulo.png")
@@ -511,6 +574,13 @@ def main():
             col.coletado = False
         for sent in fase["sentinelas"]:
             sent.timer_tiro = sent.timer_inicial
+        for mov in fase["moveis"]:
+            mov.resetar()
+        for voa in fase["voadoras"]:
+            voa.resetar()
+        for bot in fase["botoes"]:
+            bot.pressionado = False
+            bot.carga = 0.0
 
     def carregar_fase(numero):
         nonlocal fase, fase_atual, fundo_ativo
@@ -677,18 +747,43 @@ def main():
         # ESTADO: CUTSCENE (fase 4 → fase 5)
         # ==================================================
         elif estado_atual == ESTADO_CUTSCENE:
-            if len(frames_cutscene) == 0:
-                carregar_fase(5)
-                estado_atual = config.JOGANDO
+            if cut_fase in ("PRE", "POS"):
+                # Tela de carregamento PISCANDO sobre o fundo preto
+                cut_fase_timer += delta_time
+                aceso = (cut_fase_timer % 0.65) < 0.40   # 0.40s aceso / 0.25s apagado
+                if aceso and img_carregando:
+                    img_carregando.draw()
+                duracao = 2.4 if cut_fase == "PRE" else 1.8
+                if cut_fase_timer >= duracao:
+                    cut_fase_timer = 0.0
+                    if cut_fase == "PRE":
+                        if len(frames_cutscene) == 0:
+                            carregar_fase(5)
+                            estado_atual = config.JOGANDO
+                        else:
+                            cut_fase = "VIDEO"
+                            cut_frame = 0
+                            cut_timer = 0.0
+                    else:
+                        carregar_fase(5)
+                        estado_atual = config.JOGANDO
             else:
+                # VÍDEO da cutscene
                 frames_cutscene[cut_frame].draw()
+
+                # Legenda "ONDE EU ESTOU?" (aparece do frame 68 ao 115)
+                if 68 <= cut_frame <= 115:
+                    cx = janela.width / 2
+                    janela.draw_text("ONDE EU ESTOU?", cx - 146, 632, size=34, color=(0, 0, 0), bold=True)
+                    janela.draw_text("ONDE EU ESTOU?", cx - 148, 630, size=34, color=(255, 255, 255), bold=True)
+
                 cut_timer += delta_time
-                if cut_timer >= 0.045:      # ~22 fps → ~6.8s de cena
+                if cut_timer >= 0.045:      # ~22 fps
                     cut_timer = 0.0
                     cut_frame += 1
                     if cut_frame >= len(frames_cutscene):
-                        carregar_fase(5)
-                        estado_atual = config.JOGANDO
+                        cut_fase = "POS"
+                        cut_fase_timer = 0.0
 
         # ==================================================
         # ESTADO: JOGANDO
@@ -722,6 +817,18 @@ def main():
                     tecla_q = True
             else:
                 tecla_q = False
+
+            # --- Plataformas móveis, voadoras e botões montados ---
+            for mov in fase["moveis"]:
+                mov.atualizar(delta_time)
+            for voa in fase["voadoras"]:
+                voa.atualizar(delta_time, lasers)
+            for bot in fase["botoes"]:
+                mont = getattr(bot, "montura", None)
+                if mont is not None:
+                    rvm = mont.rect_visual
+                    bot.set_position(mont.x + rvm.centerx - bot.rect_visual.centerx,
+                                     (mont.y + rvm.top) - bot.rect_visual.bottom)
 
             # --- Física do Echo ---
             echo.aplicar_gravidade(delta_time)
@@ -764,6 +871,20 @@ def main():
                         echo.no_chao = True
                         break
 
+            # --- Carona nas plataformas móveis ---
+            if echo.no_chao:
+                pes_atual = echo.y + PES_VISUAL
+                for mov in fase["moveis"]:
+                    rvm = mov.rect_visual
+                    topo_mov = mov.y + rvm.top
+                    if abs(pes_atual - topo_mov) <= 8:
+                        m_esq = mov.x + rvm.left + 6
+                        m_dir = mov.x + rvm.right - 6
+                        if (echo.x + echo.width - 15) > m_esq and (echo.x + 15) < m_dir:
+                            echo.x += mov.dx_frame
+                            echo.y = topo_mov - PES_VISUAL
+                            break
+
             # --- Movimento e reprodução ---
             echo.mover(teclado, delta_time)
             echo.atualizar_gravacao()
@@ -793,23 +914,29 @@ def main():
                     las.ativo = False
 
             if echo_morreu:
-                resetar_fase()
+                # Checa se é o modo difícil pelo número limite de clones (que é 4 no modo difícil)
+                if limite_clones == 4:
+                    carregar_fase(1)      # Reinicia tudo voltando para a fase 1
+                else:
+                    resetar_fase()        # Se for fácil ou médio, reseta apenas a fase atual
             else:
                 lasers = [l for l in lasers if l.ativo]
 
             # --- Botões: pressão em TEMPO REAL (Echo ou clone ativo) ---
+            # A checagem é pelos PÉS sobre o prato (nada de ativar
+            # encostando de lado). Botões com retenção (patrulha)
+            # continuam "ativos" por alguns instantes após soltar.
             hb_echo = echo.get_hitbox()
             for bot in fase["botoes"]:
-                zona = bot.get_hitbox()
-                apertado = zona.colliderect(hb_echo)
+                apertado = bot.esta_sendo_pressionado_por(hb_echo)
                 if not apertado:
                     for eco in ecos:
-                        if eco.ativo and zona.colliderect(eco.get_hitbox()):
+                        if eco.ativo and bot.esta_sendo_pressionado_por(eco.get_hitbox()):
                             apertado = True
                             break
-                bot.pressionado = apertado
+                bot.atualizar(apertado, delta_time)
 
-            botoes_ok = all(b.pressionado for b in fase["botoes"])
+            botoes_ok = all(b.ativo() for b in fase["botoes"])
 
             # --- Coletáveis ---
             for col in fase["coletaveis"]:
@@ -829,6 +956,8 @@ def main():
                 col.draw()
             for sent in fase["sentinelas"]:
                 sent.draw()
+            for voa in fase["voadoras"]:
+                voa.draw()
             for las in lasers:
                 las.draw()
             for eco in ecos:
@@ -841,13 +970,14 @@ def main():
             cor_cubos = (0, 255, 100) if cubos_pegos >= cubos_total else (255, 200, 0)
             janela.draw_text(f"Cubos: {cubos_pegos} / {cubos_total}", 20, 55, size=28, color=cor_cubos, bold=True)
             if len(fase["botoes"]) > 0:
-                n_press = sum(1 for b in fase["botoes"] if b.pressionado)
+                n_press = sum(1 for b in fase["botoes"] if b.ativo())
                 cor_bot = (0, 255, 100) if botoes_ok else (255, 80, 80)
                 janela.draw_text(f"Botoes: {n_press} / {len(fase['botoes'])}", 20, 90, size=28, color=cor_bot, bold=True)
                 y_fase = 125
             else:
                 y_fase = 90
             janela.draw_text(f"Fase {fase_atual}", 20, y_fase, size=24, color=(255, 255, 255), bold=True)
+            
             if echo.gravando:
                 janela.draw_text("REC", 20, y_fase + 30, size=24, color=(255, 0, 0), bold=True)
 
@@ -857,6 +987,8 @@ def main():
             if echo.collided(fase["portal"]):
                 if portal_aberto:
                     if fase_atual == 4:
+                        cut_fase = "PRE"
+                        cut_fase_timer = 0.0
                         # Portal VERMELHO especial → cutscene → mundo branco
                         cut_frame = 0
                         cut_timer = 0.0

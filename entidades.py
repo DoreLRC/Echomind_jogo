@@ -65,6 +65,37 @@ def hitbox_personagem(obj, margem=0):
     )
 
 
+class Plataforma(Sprite):
+    def __init__(self, x, y):
+        super().__init__("assets/plataforma.png", 1)
+        self.set_position(x, y)
+        # Laje visível dentro do canvas (o PNG de 180x140 tem a
+        # laje real em ~(21,46)-(159,100)). O pouso do jogador
+        # usa ESTE retângulo, não o canvas com padding.
+        self.rect_visual = rect_opaco(self.image)
+
+class Coletavel(Sprite):
+    def __init__(self, x, y):
+        super().__init__("assets/coletavel.png", 1)
+        self.set_position(x, y)
+        self.coletado = False
+        self.rect_visual = rect_opaco(self.image)
+
+    def get_hitbox(self):
+        rv = self.rect_visual
+        return pygame.Rect(int(self.x) + rv.x, int(self.y) + rv.y, rv.w, rv.h)
+
+    def apoiar_no_chao(self, chao=None):
+        """Encosta a base VISÍVEL do item na linha do chão da fase."""
+        if chao is None:
+            chao = config.ALTURA_TELA - config.CHAO_Y_OFFSET
+        self.set_position(self.x, chao - self.rect_visual.bottom)
+
+    def draw(self):
+        if not self.coletado:
+            super().draw()
+
+
 # ==========================================================
 # ECHO — O JOGADOR PRINCIPAL
 # ==========================================================
@@ -257,78 +288,62 @@ class Portal(Sprite):
 # da fita em que saem de cima dele.
 # ==========================================================
 class Botao(Sprite):
-    def __init__(self, x, y):
+    def __init__(self, x, y, retencao=0.0):
         super().__init__("assets/botao.png", 1)
         self.set_position(x, y)
         self.rect_visual = rect_opaco(self.image)  # prato ~50x14
-        self.pressionado = False
-        
-        # Salva a imagem original (desativada)
-        self.imagem_normal = self.image
-        
-        # Carrega a imagem ativada (vermelha)
+        self.pressionado = False   # alguém em cima AGORA (visual vermelho)
+        self.retencao = retencao   # segundos que a "carga" dura após soltar
+        self.carga = 0.0
+
+        # Versão ATIVADA (vermelha). O canvas dela é diferente
+        # (80x110 vs 70x60), então alinhamos pelo desenho:
+        # mesmo centro-x e mesma base do prato.
         try:
-            self.imagem_ativado = pygame.image.load("assets/botao_ativado.png").convert_alpha()
-        except:
-            # Prevenção de erro caso o arquivo não seja encontrado
-            self.imagem_ativado = self.imagem_normal
+            self.img_ativado = pygame.image.load("assets/botao_ativado.png").convert_alpha()
+            rv_a = rect_opaco(self.img_ativado)
+            self.off_ativado = (self.rect_visual.centerx - rv_a.centerx,
+                                self.rect_visual.bottom - rv_a.bottom)
+        except Exception:
+            self.img_ativado = None
+            self.off_ativado = (0, 0)
 
-    def get_hitbox(self):
-        """Zona de pressão: o prato visível + uma faixa acima,
-        para que pés apoiados no prato contem de forma estável."""
-        rv = self.rect_visual
-        return pygame.Rect(int(self.x) + rv.x, int(self.y) + rv.y - 14,
-                           rv.w, rv.h + 14)
-
-    def apoiar_em(self, y_superficie):
-        """Assenta a base visível do prato numa superfície
-        (linha do chão da fase ou topo de laje: plat.y + 46)."""
-        self.set_position(self.x, y_superficie - self.rect_visual.bottom)
-
-    # === NOVO MÉTODO ===
-    def draw(self):
-        """Troca a imagem baseada no estado antes de desenhar na tela."""
-        if self.pressionado:
-            self.image = self.imagem_ativado
-        else:
-            self.image = self.imagem_normal
-            
-        super().draw()
-
-
-class Plataforma(Sprite):
-    def __init__(self, x, y):
-        super().__init__("assets/plataforma.png", 1)
-        self.set_position(x, y)
-        # Laje visível dentro do canvas (o PNG de 180x140 tem a
-        # laje real em ~(21,46)-(159,100)). O pouso do jogador
-        # usa ESTE retângulo, não o canvas com padding.
-        self.rect_visual = rect_opaco(self.image)
-
-
-# ==========================================================
-# COLETÁVEL — cubo de dados: colete os 3 da fase para o
-# portal funcionar (não dá mais clone extra)
-# ==========================================================
-class Coletavel(Sprite):
-    def __init__(self, x, y):
-        super().__init__("assets/coletavel.png", 1)
-        self.set_position(x, y)
-        self.coletado = False
-        self.rect_visual = rect_opaco(self.image)
-
-    def get_hitbox(self):
+    def prato(self):
         rv = self.rect_visual
         return pygame.Rect(int(self.x) + rv.x, int(self.y) + rv.y, rv.w, rv.h)
 
-    def apoiar_no_chao(self, chao=None):
-        """Encosta a base VISÍVEL do item na linha do chão da fase."""
-        if chao is None:
-            chao = config.ALTURA_TELA - config.CHAO_Y_OFFSET
-        self.set_position(self.x, chao - self.rect_visual.bottom)
+    def esta_sendo_pressionado_por(self, hitbox_corpo):
+        """Pressão PRECISA: o centro dos pés precisa estar SOBRE o
+        prato (na horizontal) e os pés na altura do prato. Encostar
+        de lado não conta mais."""
+        p = self.prato()
+        if not (p.left <= hitbox_corpo.centerx <= p.right):
+            return False
+        pes = hitbox_corpo.bottom
+        return (p.top - 18) <= pes <= (p.bottom + 6)
+
+    def atualizar(self, pressionado_agora, delta_time):
+        self.pressionado = pressionado_agora
+        if pressionado_agora:
+            self.carga = self.retencao
+        elif self.carga > 0:
+            self.carga -= delta_time
+
+    def ativo(self):
+        """Conta para o portal: pressão direta OU carga residual
+        (usada nos pares de botões de patrulha)."""
+        return self.pressionado or self.carga > 0
+
+    def apoiar_em(self, y_superficie):
+        """Assenta a base visível do prato numa superfície."""
+        self.set_position(self.x, y_superficie - self.rect_visual.bottom)
 
     def draw(self):
-        if not self.coletado:
+        if self.pressionado and self.img_ativado is not None:
+            tela = Window.get_screen()
+            tela.blit(self.img_ativado,
+                      (int(self.x + self.off_ativado[0]), int(self.y + self.off_ativado[1])))
+        else:
             super().draw()
 
 
@@ -457,3 +472,128 @@ class Sentinela(Sprite):
 
         novo.set_position(novo_x, novo_y)
         lista_lasers.append(novo)
+
+# ==========================================================
+# LASER VERTICAL — tiro da sentinela voadora (laser2.png).
+# A arte aponta p/ a direita; rotacionamos p/ apontar p/ BAIXO.
+# Hitbox maior e o projétil morre só ao tocar o chão da fase.
+# ==========================================================
+class LaserVertical(Sprite):
+    def __init__(self, x, y, velocidade=430, y_max=720):
+        super().__init__("assets/laser2.png", 1)
+        self.image = pygame.transform.rotate(self.image, -90)  # aponta p/ baixo
+        self.set_position(x, y)
+        self.vel_y = velocidade
+        self.y_max = y_max          # linha do chão da fase
+        self.ativo = True
+        self.direcao = "BAIXO"
+        self.rect_visual = rect_opaco(self.image)  # ~14x70 após rotação
+
+    def get_hitbox(self):
+        rv = self.rect_visual
+        mx = max(1, int(rv.w * 0.10))
+        my = max(1, int(rv.h * 0.08))
+        return pygame.Rect(int(self.x) + rv.x + mx, int(self.y) + rv.y + my,
+                           max(1, rv.w - 2 * mx), max(1, rv.h - 2 * my))
+
+    def mover(self, delta_time):
+        if not self.ativo:
+            return
+        self.y += self.vel_y * delta_time
+        # morre quando a PONTA visível alcança o chão
+        if self.y + self.rect_visual.bottom >= self.y_max:
+            self.ativo = False
+
+    def fora_da_tela(self):
+        return self.y > config.ALTURA_TELA + 60
+
+
+# ==========================================================
+# SENTINELA VOADORA — patrulha horizontal soltando tiros
+# VERTICAIS (sentinela2.png). Uma chuva móvel: estátuas não
+# a anulam, porque a coluna de tiro anda com ela.
+# ==========================================================
+class SentinelaVoadora(Sprite):
+    def __init__(self, x_min, x_max, y, cooldown=1.5, vel_patrulha=100,
+                 vel_laser=430, y_chao=720, timer_inicial=0.0):
+        super().__init__("assets/sentinela2.png", 1)
+        self.x_min = x_min
+        self.x_max = x_max
+        self.x_inicial = x_min
+        self.set_position(x_min, y)
+        self.cooldown = cooldown
+        self.vel_patrulha = vel_patrulha
+        self.vel_laser = vel_laser
+        self.y_chao = y_chao
+        self.timer_inicial = timer_inicial
+        self.timer_tiro = timer_inicial
+        self.sentido = 1
+        self.rect_visual = rect_opaco(self.image)  # pod ~68x155
+
+    def resetar(self):
+        self.set_position(self.x_inicial, self.y)
+        self.sentido = 1
+        self.timer_tiro = self.timer_inicial
+
+    def atualizar(self, delta_time, lista_lasers):
+        # patrulha ping-pong
+        self.x += self.vel_patrulha * self.sentido * delta_time
+        if self.x >= self.x_max:
+            self.x = self.x_max
+            self.sentido = -1
+        elif self.x <= self.x_min:
+            self.x = self.x_min
+            self.sentido = 1
+        self.set_position(self.x, self.y)
+
+        # tiro vertical saindo da BASE do pod, centralizado
+        self.timer_tiro += delta_time
+        if self.timer_tiro >= self.cooldown:
+            self.timer_tiro = 0
+            novo = LaserVertical(0, 0, self.vel_laser, self.y_chao)
+            lv = novo.rect_visual
+            tv = self.rect_visual
+            novo.set_position(self.x + tv.centerx - lv.centerx,
+                              self.y + tv.bottom - lv.top - 6)
+            lista_lasers.append(novo)
+
+
+# ==========================================================
+# PLATAFORMA MÓVEL — vai e volta entre dois pontos. O Echo é
+# CARREGADO por ela; clones NÃO (fitas guardam posições
+# absolutas) — por isso um botão montado nela só pode ser
+# segurado por uma fita gravada ANDANDO JUNTO, spawnada na
+# fase certa do vaivém.
+# ==========================================================
+class PlataformaMovel(Plataforma):
+    def __init__(self, x1, y1, x2, y2, velocidade=100):
+        super().__init__(x1, y1)
+        self.p1 = (x1, y1)
+        self.p2 = (x2, y2)
+        self.velocidade = velocidade
+        self.indo = True          # True: rumo a p2
+        self.dx_frame = 0.0
+        self.dy_frame = 0.0
+
+    def resetar(self):
+        self.set_position(*self.p1)
+        self.indo = True
+        self.dx_frame = self.dy_frame = 0.0
+
+    def atualizar(self, delta_time):
+        alvo = self.p2 if self.indo else self.p1
+        vx = alvo[0] - self.x
+        vy = alvo[1] - self.y
+        dist = (vx * vx + vy * vy) ** 0.5
+        passo = self.velocidade * delta_time
+        if dist <= passo or dist == 0:
+            self.dx_frame = alvo[0] - self.x
+            self.dy_frame = alvo[1] - self.y
+            self.set_position(alvo[0], alvo[1])
+            self.indo = not self.indo
+        else:
+            self.dx_frame = vx / dist * passo
+            self.dy_frame = vy / dist * passo
+            self.set_position(self.x + self.dx_frame, self.y + self.dy_frame)
+
+
