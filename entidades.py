@@ -336,13 +336,11 @@ class Coletavel(Sprite):
 # LASER — projétil disparado pela Sentinela
 # ==========================================================
 class Laser(Sprite):
-    
-    def __init__(self, x, y, direcao, velocidade=400, alcance=None, imagem="laser.png"):
-        super().__init__(f"assets/{imagem}", 1) # Usa a variável de imagem agora
+    def __init__(self, x, y, direcao, velocidade=400, alcance=None):
+        super().__init__("assets/laser.png", 1)
         self.set_position(x, y)
         self.direcao = direcao
         self.vel_x = velocidade
-        # ... o resto do __init__ continua exatamente igual ...
         self.ativo = True
         # Alcance máximo em px (None = atravessa a tela toda).
         # Usado para criar zonas seguras, como o ponto de spawn.
@@ -440,17 +438,7 @@ class Sentinela(Sprite):
         """Cria o laser exatamente na boca do cano VISÍVEL da
         torre — e não no canto do canvas transparente, que era o
         que fazia o tiro nascer 'no chão, na frente da sentinela'."""
-        
-        # Sorteio: 20% de chance (0.2) de ser o laser2.png. 
-        # Você pode alterar esse 0.2 para 0.5 (50%), 0.1 (10%), etc.
-        if random.random() < 0.2:
-            img_escolhida = "laser2.png"
-        else:
-            img_escolhida = "laser.png"
-
-        # Passamos a img_escolhida para o novo Laser
-        novo = Laser(0, 0, self.direcao, self.vel_laser, self.alcance, imagem=img_escolhida)
-        
+        novo = Laser(0, 0, self.direcao, self.vel_laser, self.alcance)
         lv = novo.rect_visual
         tv = self.rect_visual
 

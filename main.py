@@ -792,7 +792,10 @@ def main():
                 if las.fora_da_tela():
                     las.ativo = False
 
-            
+            if echo_morreu:
+                resetar_fase()
+            else:
+                lasers = [l for l in lasers if l.ativo]
 
             # --- Botões: pressão em TEMPO REAL (Echo ou clone ativo) ---
             hb_echo = echo.get_hitbox()
